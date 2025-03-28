@@ -77,7 +77,8 @@ if uploaded_file:
             zone_names = []
             zone_rates = []
             for i in range(zone_count - 1):
-                thresholds.append(st.number_input(f"Threshold {i+1} (max for Zone {i+1})", value=(i+1)*2))
+                thresholds.append(st.number_input(f"Threshold {i+1} (max for Zone {i+1})", value=(i+1)*2.0, step=0.1))
+
             for i in range(zone_count):
                 col = st.columns([2, 2, 2])
                 with col[0]:
