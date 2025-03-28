@@ -20,8 +20,8 @@ import tempfile
 import zipfile
 
 st.set_page_config(page_title="SnailCam Visualizer", layout="wide")
-st.title("🐌 SnailCam Data Viewer")
-st.markdown("Upload SnailCam detection data and visualize snail counts with exponential decay IDW.")
+st.title("SnailCam Data Viewer by Rain")
+st.markdown("Upload SnailCam detection data and visualize snail counts.")
 
 def get_colormap_and_norm(min_count, max_count):
     cmap = mcolors.LinearSegmentedColormap.from_list("custom", ["green", "yellow", "orange", "red"])
@@ -86,7 +86,7 @@ if uploaded_file:
                 with col[1]:
                     zone_rates.append(st.number_input(f"{zone_names[-1]} Rate (kg/ha)", value=0))
             min_area = st.slider("Minimum zone area (pixels)", 0, 50, 0, step=1, key="min_area")
-            download = st.sidebar.button("📥 Download Zone Shapefile")
+            download = st.sidebar.button("Create Shapefile")
 
         # === HEATMAP INTERPOLATION ===
         points = np.array([(geom.x, geom.y) for geom in gdf_m.geometry])
@@ -217,7 +217,7 @@ if uploaded_file:
                         if os.path.exists(filepath):
                             zf.write(filepath, arcname="zones" + ext)
                 with open(zip_path, "rb") as f:
-                    st.sidebar.download_button("📦 Download Zoning Shapefile", f.read(), file_name="zones.zip")
+                    st.sidebar.download_button("📦 Download Shapefile", f.read(), file_name="zones.zip")
 
     elif mode == "Detection Map":
         with st.sidebar.expander("Detection Map Settings", expanded=True):
