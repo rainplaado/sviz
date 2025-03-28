@@ -1,0 +1,11 @@
+streamlit>=1.20.0
+pandas
+geopandas
+shapely
+matplotlib
+numpy
+scipy
+scikit-image
+folium
+leafmap
+pyogrio
