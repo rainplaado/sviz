@@ -145,9 +145,13 @@ if uploaded_file:
             (1.0, 0.0, 0.0),
         ]
 
-        zone_rgb = np.zeros((*zone_map.shape, 3))
+        # Initialize background as light gray
+        zone_rgb = np.ones((*zone_map.shape, 3)) * 0.95  # light gray background
+
+        # Overwrite with zone colors
         for z in range(1, zone_count + 1):
             zone_rgb[zone_map == z] = zone_colors[z]
+
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.5, 4.3), dpi=70)
         ax1.imshow(grid_z, extent=(minx, maxx, miny, maxy), origin='lower', cmap=cmap, norm=norm)
