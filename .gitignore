@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.zip
+*.dbf
+*.shx
+*.prj
+myvenv/
+.env
