@@ -4,5 +4,40 @@ __pycache__/
 *.dbf
 *.shx
 *.prj
+*.shp
+*.cpg
+*.png
+
+# Virtual environments
+.venv/
 myvenv/
 .env
+
+# Client data files
+*.csv
+
+# Temp/experimental directories
+.claude/
+PCT/
+boundaries_temp/
+harvest_compare/
+jd_export_temp/
+jd_pinehills_export/
+jd_pinehills_export2/
+jd_pinehills_export3/
+jd_simple_export/
+jd_snail_export/
+jd_snail_application/
+isoxml_m9_export/
+isoxml_timelog_export/
+work_data_temp/
+paracowie/
+topcon/
+
+# Experimental/utility scripts
+convert_to_jd.py
+csv_to_isoxml.py
+analyze_shapefiles.py
+gen.py
+write_script.py
+run_isoxml.bat
