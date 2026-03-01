@@ -265,7 +265,7 @@ if uploaded_files:
                         fig_preview = render_heatmap_only(grid_z, bounds, cmap_preview, norm_preview, filename, snail_type=preview_snail_type, hide_field_name=hide_field_name)
                         png_preview = figure_to_bytes(fig_preview, format='png', dpi=100)
                         preview_images[filename] = png_preview
-                        st.image(png_preview, caption=filename, width="stretch")
+                        st.image(png_preview, caption=filename, use_container_width=True)
                         plt.close(fig_preview)
                     except Exception as e:
                         st.caption(f"⚠️ {filename}")
