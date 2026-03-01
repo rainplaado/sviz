@@ -27,6 +27,7 @@ DEFAULT_ZOOM = 17
 NO_DATA_COLOR = (0.95, 0.95, 0.95)     # Light gray
 CLEAR_ZONE_COLOR = (0.7, 0.95, 0.7)    # Pale green — no snails detected
 RISK_ZONE_COLORS = {
+    1: [(1.0, 0.0, 0.0)],                                           # 1 risk zone: red (bait zone)
     2: [(1.0, 1.0, 0.0), (1.0, 0.0, 0.0)],                         # 2 risk zones: yellow, red
     3: [(1.0, 1.0, 0.0), (1.0, 0.6, 0.0), (1.0, 0.0, 0.0)],       # 3 risk zones: yellow, orange, red
 }

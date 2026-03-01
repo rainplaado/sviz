@@ -165,7 +165,9 @@ def classify_zones(grid_z, thresholds, zone_count, clear_threshold=0.1):
     # Risk zones: only cells with density > clear_threshold
     positive = valid & (grid_z > clear_threshold)
 
-    if zone_count == 2:
+    if zone_count == 1:
+        zone_map[positive] = 2
+    elif zone_count == 2:
         t1 = thresholds[0]
         zone_map[positive & (grid_z <= t1)] = 2
         zone_map[positive & (grid_z > t1)] = 3

@@ -273,6 +273,106 @@ def render_heatmap_only(grid_z, bounds, cmap, norm, title, snail_type=None, boun
     return fig
 
 
+def render_zone_map_figure(zone_rgb, bounds, zone_stats, zone_names, zone_count,
+                           legend_entries=None, title="Treatment Zones",
+                           clear_threshold=0.1, hide_field_name=False):
+    """
+    Render only the zone map with zone area labels (in ha) for PNG export.
+
+    Args:
+        zone_rgb: 3D numpy array (height, width, 3) of zone colors
+        bounds: (minx, maxx, miny, maxy) in Web Mercator
+        zone_stats: list of zone stat dicts (from get_zone_statistics)
+        zone_names: list of risk zone names
+        zone_count: number of risk zones
+        legend_entries: list of (color_tuple, label_string) for legend
+        title: figure title
+        clear_threshold: clear zone threshold
+        hide_field_name: if True, use generic title
+
+    Returns: matplotlib figure
+    """
+    from matplotlib.patches import Patch
+
+    minx, maxx, miny, maxy = bounds
+
+    # Calculate aspect ratio for the figure
+    width = maxx - minx
+    height = maxy - miny
+    aspect = width / height if height > 0 else 1
+
+    fig_width = 10
+    fig_height = fig_width / aspect
+    fig_height = max(6, min(fig_height, 12))
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=100)
+
+    ax.imshow(zone_rgb, extent=(minx, maxx, miny, maxy), origin='lower')
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.axis('off')
+
+    # Add area labels on each zone
+    # Build labels: clear zone + risk zones
+    label_items = []
+    for stat in zone_stats:
+        if stat['zone_type'] == 'clear':
+            label_items.append((1, f"Clear\n{stat['area_ha']:.2f} ha"))
+        else:
+            risk_idx = stat['zone'] - 2
+            name = zone_names[risk_idx] if risk_idx < len(zone_names) else f"Zone {risk_idx+1}"
+            label_items.append((stat['zone'], f"{name}\n{stat['area_ha']:.2f} ha"))
+
+    # Place labels at the centroid of each zone's largest region
+    from skimage import measure
+    zone_map_2d = np.zeros(zone_rgb.shape[:2], dtype=np.uint8)
+    # Reconstruct zone_map from zone_rgb by matching colors
+    # Instead, use a simpler approach: for each zone number, find pixels
+    # We can derive zone numbers from zone_stats
+    from config import CLEAR_ZONE_COLOR, RISK_ZONE_COLORS, NO_DATA_COLOR
+
+    all_colors = [NO_DATA_COLOR, CLEAR_ZONE_COLOR]
+    all_colors.extend(RISK_ZONE_COLORS.get(zone_count, RISK_ZONE_COLORS.get(3, [])))
+
+    # Reconstruct zone_map from RGB by color matching
+    for z, color in enumerate(all_colors):
+        color_arr = np.array(color)
+        match = np.all(np.abs(zone_rgb - color_arr) < 0.01, axis=2)
+        zone_map_2d[match] = z
+
+    h, w = zone_map_2d.shape
+    for zone_num, label_text in label_items:
+        mask = zone_map_2d == zone_num
+        if not np.any(mask):
+            continue
+
+        # Find largest connected component
+        labeled = measure.label(mask)
+        props = measure.regionprops(labeled)
+        if not props:
+            continue
+
+        largest = max(props, key=lambda r: r.area)
+        cy, cx = largest.centroid  # row, col
+
+        # Convert pixel coords to map coords
+        map_x = minx + (cx / w) * (maxx - minx)
+        map_y = miny + (cy / h) * (maxy - miny)
+
+        ax.text(map_x, map_y, label_text, ha='center', va='center',
+                fontsize=10, fontweight='bold',
+                color='black',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                          alpha=0.8, edgecolor='gray'))
+
+    # Add legend
+    if legend_entries:
+        legend_elements = [Patch(facecolor=c, label=l) for c, l in legend_entries]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+
+    plt.tight_layout()
+    return fig
+
+
 def figure_to_bytes(fig, format='png', dpi=150):
     """Convert matplotlib figure to bytes for download."""
     buf = io.BytesIO()

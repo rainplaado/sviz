@@ -32,7 +32,8 @@ from data_loader import (
 )
 from heatmap import (
     get_colormap_and_norm, interpolate_heatmap,
-    render_heatmap_figure, render_heatmap_only, figure_to_bytes
+    render_heatmap_figure, render_heatmap_only, render_zone_map_figure,
+    figure_to_bytes
 )
 from zones import (
     classify_zones, filter_small_zones, create_zone_rgb,
@@ -264,7 +265,7 @@ if uploaded_files:
                         fig_preview = render_heatmap_only(grid_z, bounds, cmap_preview, norm_preview, filename, snail_type=preview_snail_type, hide_field_name=hide_field_name)
                         png_preview = figure_to_bytes(fig_preview, format='png', dpi=100)
                         preview_images[filename] = png_preview
-                        st.image(png_preview, caption=filename, use_container_width=True)
+                        st.image(png_preview, caption=filename, width="stretch")
                         plt.close(fig_preview)
                     except Exception as e:
                         st.caption(f"⚠️ {filename}")
@@ -515,10 +516,10 @@ if uploaded_files:
         # Calculate and display field statistics
         stats = calculate_field_statistics(gdf_m, prepared_df, snail_type)
 
-        # Override area with boundary area if available
+        # Keep boundary area separate — total_area_ha will be updated
+        # after zone processing to reflect actual mapped coverage
         if boundary_area_ha:
-            stats['total_area_ha'] = boundary_area_ha
-            stats['avg_density'] = stats['total_snails'] / boundary_area_ha if boundary_area_ha > 0 else 0
+            stats['boundary_area_ha'] = boundary_area_ha
 
         # === FIELD SUMMARY ===
         st.header("📊 Field Summary")
@@ -527,7 +528,10 @@ if uploaded_files:
         summary_cols = st.columns(5)
 
         with summary_cols[0]:
-            st.metric("Total Field Area", f"{stats['total_area_ha']:.2f} ha")
+            area_label = "Total Field Area"
+            if boundary_area_ha:
+                area_label = "Boundary Area"
+            st.metric(area_label, f"{stats.get('boundary_area_ha', stats['total_area_ha']):.2f} ha")
         with summary_cols[1]:
             st.metric("Total Snails Detected", f"{stats['total_snails']:,}")
         with summary_cols[2]:
@@ -599,8 +603,8 @@ if uploaded_files:
                 )
 
                 zone_count = st.radio(
-                    "Number of risk zones", [2, 3], index=1, horizontal=True,
-                    help="2 = Low + High risk. 3 = Low + Medium + High risk."
+                    "Number of risk zones", [1, 2, 3], index=2, horizontal=True,
+                    help="1 = Bait zone only. 2 = Low + High risk. 3 = Low + Medium + High risk."
                 )
 
                 thresholds = []
@@ -658,7 +662,8 @@ if uploaded_files:
                 st.caption("**Risk zone names and bait rates:**")
 
                 default_names = (
-                    ["Low Risk", "High Risk"] if zone_count == 2
+                    ["Bait Zone"] if zone_count == 1
+                    else ["Low Risk", "High Risk"] if zone_count == 2
                     else ["Low Risk", "Medium Risk", "High Risk"]
                 )
 
@@ -728,33 +733,34 @@ if uploaded_files:
                 zone_areas = calculate_zone_areas(zone_map, pixel_size, zone_count)
                 zone_stats = get_zone_statistics(zone_map, grid_z, zone_count, pixel_size)
 
-                # Scale zone areas to match boundary area if available
-                if boundary_area_ha:
-                    total_zone_pixels = sum(s['pixels'] for s in zone_stats)
-                    if total_zone_pixels > 0:
-                        for stat in zone_stats:
-                            stat['area_ha'] = (stat['pixels'] / total_zone_pixels) * boundary_area_ha
+                # Zone areas are calculated directly from pixel counts
+                # (actual mapped/surveyed area, not scaled to boundary)
 
             # Build legend entries for the zone map
             zone_colors = get_zone_colors(zone_count)
             legend_entries = []
-            # Clear zone
+            # Clear zone - zone_stats[0] is always the clear zone (zone 1)
+            clear_area = zone_stats[0]['area_ha'] if len(zone_stats) > 0 else 0
             legend_entries.append((
                 CLEAR_ZONE_COLOR,
-                f"Clear (0 snails): 0 kg/ha"
+                f"Clear (0 snails): 0 kg/ha — {clear_area:.2f} ha"
             ))
             # Risk zones
             for i in range(zone_count):
                 color = zone_colors[i + 2]
-                if i == 0:
+                if zone_count == 1:
+                    range_text = f">{clear_threshold:.1f}"
+                elif i == 0:
                     range_text = f"{clear_threshold:.1f}-{thresholds[0]:.1f}"
                 elif i == zone_count - 1:
                     range_text = f">{thresholds[-1]:.1f}"
                 else:
                     range_text = f"{thresholds[i-1]:.1f}-{thresholds[i]:.1f}"
+                # zone_stats[i+1] corresponds to risk zone i (index 0 is clear)
+                risk_area = zone_stats[i + 1]['area_ha'] if (i + 1) < len(zone_stats) else 0
                 legend_entries.append((
                     color,
-                    f"{zone_names[i]} ({range_text}): {zone_rates[i]} kg/ha"
+                    f"{zone_names[i]} ({range_text}): {zone_rates[i]} kg/ha — {risk_area:.2f} ha"
                 ))
 
             # Render the figure
@@ -766,7 +772,7 @@ if uploaded_files:
             )
 
             # Display the figure
-            st.pyplot(fig, use_container_width=True)
+            st.pyplot(fig, width="stretch")
 
             # === ZONE SUMMARY TABLE ===
             st.subheader("📋 Zone Summary")
@@ -785,7 +791,9 @@ if uploaded_files:
                     })
                 else:
                     risk_idx = stat['zone'] - 2  # 0-based index into zone_names/zone_rates
-                    if risk_idx == 0:
+                    if zone_count == 1:
+                        range_text = f"> {clear_threshold:.1f}"
+                    elif risk_idx == 0:
                         range_text = f"{clear_threshold:.1f} - {thresholds[0]:.1f}"
                     elif risk_idx == zone_count - 1:
                         range_text = f"> {thresholds[-1]:.1f}"
@@ -805,12 +813,23 @@ if uploaded_files:
                         "Total Bait (kg)": f"{bait:.1f}"
                     })
 
+            # Add total mapped area row
+            mapped_area = sum(s['area_ha'] for s in zone_stats)
+            zone_data.append({
+                "Zone": "**Total Mapped Area**",
+                "Snail Range": "",
+                "Area (ha)": f"{mapped_area:.2f}",
+                "Avg Density": "",
+                "Bait Rate (kg/ha)": "",
+                "Total Bait (kg)": f"{total_bait:.1f}"
+            })
+
             st.table(pd.DataFrame(zone_data))
             st.info(f"💰 **Total bait required: {total_bait:.1f} kg**")
 
             # === DOWNLOAD BUTTON ===
             st.subheader("📥 Download Map")
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
 
             with col1:
                 # Download as PNG
@@ -829,6 +848,24 @@ if uploaded_files:
                     label="⬇️ Download High-Res PNG",
                     data=png_hires,
                     file_name=f"{filename}_snail_map_hires.png",
+                    mime="image/png"
+                )
+
+            with col3:
+                # Download zone map only with area labels
+                zone_fig = render_zone_map_figure(
+                    zone_rgb, bounds, zone_stats, zone_names, zone_count,
+                    legend_entries=legend_entries,
+                    title="Treatment Zones",
+                    clear_threshold=clear_threshold,
+                    hide_field_name=hide_field_name
+                )
+                zone_png = figure_to_bytes(zone_fig, format='png', dpi=200)
+                plt.close(zone_fig)
+                st.download_button(
+                    label="⬇️ Download Zone Map PNG",
+                    data=zone_png,
+                    file_name=f"{filename}_zone_map.png",
                     mime="image/png"
                 )
 
