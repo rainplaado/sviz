@@ -380,8 +380,8 @@ def zones_to_polygons(zone_map, bounds, pixel_size, zone_count,
         # Merge strips into zone polygon(s)
         merged = unary_union(strips)
 
-        # Simplify to smooth stair-step edges
-        tol = min(px_width, px_height) * 0.4
+        # Simplify to smooth stair-step edges and reduce vertex count
+        tol = min(px_width, px_height) * 1.5
         merged = merged.simplify(tol, preserve_topology=True)
 
         if merged.is_empty:
@@ -470,6 +470,34 @@ def export_zones_to_shapefile(gdf, filename="prescription_zones",
     export_gdf['geometry'] = export_gdf['geometry'].apply(
         lambda g: ShapelyPolygon(g.exterior) if hasattr(g, 'exterior') else g
     )
+
+    # Remove tiny polygon fragments to stay under JD's feature limit
+    # Dissolve by rate, then re-explode — this merges touching fragments
+    export_gdf = export_gdf.dissolve(by=field_col, as_index=False)
+    export_gdf = export_gdf.explode(index_parts=False).reset_index(drop=True)
+
+    # Filter out fragments smaller than 0.01 ha (100 m²)
+    # Use a projected CRS for accurate area calculation
+    export_projected = export_gdf.to_crs(epsg=3857)
+    min_area_m2 = 100  # 0.01 ha
+    keep_mask = export_projected.geometry.area >= min_area_m2
+    export_gdf = export_gdf[keep_mask].reset_index(drop=True)
+
+    # If still over 500 features, progressively simplify and merge
+    if len(export_gdf) > 500:
+        export_gdf = export_gdf.dissolve(by=field_col, as_index=False)
+        # Simplify geometry more aggressively
+        export_gdf['geometry'] = export_gdf['geometry'].simplify(0.0001, preserve_topology=True)
+        export_gdf = export_gdf.explode(index_parts=False).reset_index(drop=True)
+        # Remove holes again after simplification
+        export_gdf['geometry'] = export_gdf['geometry'].apply(
+            lambda g: ShapelyPolygon(g.exterior) if hasattr(g, 'exterior') else g
+        )
+        # Filter small fragments again with higher threshold
+        export_projected = export_gdf.to_crs(epsg=3857)
+        min_area_m2 = 500  # 0.05 ha
+        keep_mask = export_projected.geometry.area >= min_area_m2
+        export_gdf = export_gdf[keep_mask].reset_index(drop=True)
 
     # Calculate stats for metadata
     rates = export_gdf[field_col].values
