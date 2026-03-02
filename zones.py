@@ -183,12 +183,12 @@ def classify_zones(grid_z, thresholds, zone_count, clear_threshold=0.1):
 
 def filter_small_zones(zone_map, min_area_ha, zone_count, pixel_size=5):
     """
-    Remove small isolated risk zone regions (noise reduction).
+    Remove small isolated zone regions (noise reduction).
 
-    Only affects risk zones (2+). The clear zone (1) and no-data (0)
-    are never changed, keeping field edges stable.
-
-    Small risk regions are absorbed into the surrounding dominant zone.
+    Filters both small risk zone patches AND small clear zone holes
+    inside risk areas. Each small region is absorbed into the
+    surrounding dominant zone. No-data (0) and field edges are
+    never changed.
 
     Args:
         zone_map: 2D array with zone numbers
@@ -205,8 +205,8 @@ def filter_small_zones(zone_map, min_area_ha, zone_count, pixel_size=5):
     ha_per_pixel = (pixel_size ** 2) / 10000
     min_pixels = min_area_ha / ha_per_pixel
 
-    # Only filter risk zones (2 through zone_count+1)
-    for z in range(2, zone_count + 2):
+    # Filter risk zones (2 through zone_count+1) AND clear zone (1)
+    for z in range(1, zone_count + 2):
         labeled = measure.label(zone_map == z)
         props = measure.regionprops(labeled)
         for region in props:
@@ -229,9 +229,13 @@ def filter_small_zones(zone_map, min_area_ha, zone_count, pixel_size=5):
                 if len(surrounding_values) > 0:
                     fill_zone = int(np.bincount(surrounding_values).argmax())
                 else:
-                    fill_zone = 1  # Default to clear if no surrounding data
+                    # For clear zones, default to keeping clear
+                    # For risk zones, default to clear
+                    fill_zone = 1
 
-                zone_map[labeled == region.label] = fill_zone
+                # Don't replace clear with clear (no-op)
+                if fill_zone != z:
+                    zone_map[labeled == region.label] = fill_zone
 
     return zone_map
 
