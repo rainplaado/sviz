@@ -501,7 +501,7 @@ if uploaded_files:
                         if stat['zone_type'] == 'clear':
                             zone_data.append({
                                 "Zone": "Clear", "Area (ha)": f"{stat['area_ha']:.2f}",
-                                "Bait Rate (kg/ha)": 0, "Total Bait (kg)": "0"
+                                "Bait Rate (kg/ha)": "0", "Total Bait (kg)": "0"
                             })
                         else:
                             risk_idx = stat['zone'] - 2
@@ -511,7 +511,7 @@ if uploaded_files:
                             zone_data.append({
                                 "Zone": batch_zone_names[risk_idx] if risk_idx < len(batch_zone_names) else f"Zone {risk_idx+1}",
                                 "Area (ha)": f"{stat['area_ha']:.2f}",
-                                "Bait Rate (kg/ha)": rate,
+                                "Bait Rate (kg/ha)": str(rate),
                                 "Total Bait (kg)": f"{bait:.1f}"
                             })
                     st.table(pd.DataFrame(zone_data))
@@ -974,7 +974,7 @@ if uploaded_files:
                         "Snail Range": f"<= {clear_threshold:.1f}",
                         "Area (ha)": f"{stat['area_ha']:.2f}",
                         "Avg Density": "0",
-                        "Bait Rate (kg/ha)": 0,
+                        "Bait Rate (kg/ha)": "0",
                         "Total Bait (kg)": "0"
                     })
                 else:
@@ -997,18 +997,18 @@ if uploaded_files:
                         "Snail Range": range_text,
                         "Area (ha)": f"{stat['area_ha']:.2f}",
                         "Avg Density": f"{stat['avg_density']:.1f}",
-                        "Bait Rate (kg/ha)": rate,
+                        "Bait Rate (kg/ha)": str(rate),
                         "Total Bait (kg)": f"{bait:.1f}"
                     })
 
             # Add total mapped area row
             mapped_area = sum(s['area_ha'] for s in zone_stats)
             zone_data.append({
-                "Zone": "**Total Mapped Area**",
-                "Snail Range": "",
+                "Zone": "Total Mapped Area",
+                "Snail Range": "-",
                 "Area (ha)": f"{mapped_area:.2f}",
-                "Avg Density": "",
-                "Bait Rate (kg/ha)": "",
+                "Avg Density": "-",
+                "Bait Rate (kg/ha)": "-",
                 "Total Bait (kg)": f"{total_bait:.1f}"
             })
 
