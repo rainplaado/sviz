@@ -394,44 +394,44 @@ if uploaded_files:
         st.write(f"Total: **{len(groups)} map(s)** from {len(dataframes)} files")
         st.divider()
 
-        # Process button
-        if st.button("🚀 Process All & Generate Heatmaps", type="primary"):
-            cmap, norm = get_colormap_and_norm(min_count, max_count)
-            png_dict = {}
-            rx_dict = {}  # prescription ZIPs per field
+        # === PROCESS ALL FIELDS INLINE ===
+        cmap, norm = get_colormap_and_norm(min_count, max_count)
+        all_png = {}
+        all_rx = {}
 
-            # Determine which snail types to process
-            if snail_option == "All (separate)":
-                snail_types_to_process = ["Conical", "Italian"]
-            elif snail_option == "Both":
-                snail_types_to_process = ["Total"]
-            else:
-                snail_types_to_process = [snail_option]
+        # Determine which snail types to process
+        if snail_option == "All (separate)":
+            snail_types_to_process = ["Conical", "Italian"]
+        elif snail_option == "Both":
+            snail_types_to_process = ["Total"]
+        else:
+            snail_types_to_process = [snail_option]
 
-            total_steps = len(groups) * len(snail_types_to_process)
-            progress = st.progress(0, text="Processing...")
-            step = 0
+        for idx, group in enumerate(groups):
+            combined_df = group['combined_df']
+            group_name = group.get('boundary_name', group['files'][0] if len(group['files']) == 1 else f"merged_{'+'.join(group['files'][:2])}")
+            group_boundary = group.get('boundary_gdf', None)
 
-            for idx, group in enumerate(groups):
-                combined_df = group['combined_df']
-                group_name = group.get('boundary_name', group['files'][0] if len(group['files']) == 1 else f"merged_{'+'.join(group['files'][:2])}")
-                group_boundary = group.get('boundary_gdf', None)
+            # Ensure Total column exists if needed
+            if "Total" not in combined_df.columns:
+                combined_df["Total"] = combined_df.get("Conical", 0) + combined_df.get("Italian", 0)
 
-                # Ensure Total column exists if needed
-                if "Total" not in combined_df.columns:
-                    combined_df["Total"] = combined_df.get("Conical", 0) + combined_df.get("Italian", 0)
+            for snail_type in snail_types_to_process:
+                if snail_option == "All (separate)":
+                    output_name = f"{group_name}_{snail_type}"
+                else:
+                    output_name = group_name
 
-                for snail_type in snail_types_to_process:
-                    step += 1
-                    progress.progress(step / total_steps, text=f"Processing {group_name} ({snail_type})...")
+                st.header(f"🗺️ {output_name}")
 
-                    # Create GeoDataFrame
-                    gdf, gdf_m = create_geodataframe(combined_df, snail_type, min_count, max_count)
+                # Create GeoDataFrame
+                gdf, gdf_m = create_geodataframe(combined_df, snail_type, min_count, max_count)
 
-                    if len(gdf) == 0:
-                        st.warning(f"⚠️ No data for {group_name} ({snail_type})")
-                        continue
+                if len(gdf) == 0:
+                    st.warning(f"⚠️ No data for {output_name}")
+                    continue
 
+                with st.spinner(f"Processing {output_name}..."):
                     # Generate heatmap
                     grid_z, grid_x, grid_y, bounds = interpolate_heatmap(
                         gdf_m, snail_type, pixel_size, search_radius,
@@ -452,87 +452,154 @@ if uploaded_files:
                         if boundary_mask is not None:
                             grid_z = np.where(boundary_mask, grid_z, np.nan)
 
-                    # Render heatmap-only figure
-                    if snail_option == "All (separate)":
-                        output_name = f"{group_name}_{snail_type}"
-                    else:
-                        output_name = group_name
+                    # Classify zones
+                    zone_map = classify_zones(grid_z, batch_thresholds, batch_zone_count, batch_clear_threshold)
+                    zone_map = filter_small_zones(zone_map, batch_min_area, batch_zone_count, pixel_size)
+                    zone_rgb = create_zone_rgb(zone_map, batch_zone_count)
+                    zone_stats = get_zone_statistics(zone_map, grid_z, batch_zone_count, pixel_size)
 
-                    fig = render_heatmap_only(grid_z, bounds, cmap, norm, group_name, snail_type=snail_type, boundary_gdf=group_boundary, hide_field_name=hide_field_name)
-                    png_bytes = figure_to_bytes(fig, format='png', dpi=300)
-                    png_dict[output_name] = png_bytes
-                    plt.close(fig)
+                    # Build legend entries
+                    zone_colors = get_zone_colors(batch_zone_count)
+                    legend_entries = []
+                    clear_area = zone_stats[0]['area_ha'] if len(zone_stats) > 0 else 0
+                    legend_entries.append((
+                        CLEAR_ZONE_COLOR,
+                        f"Clear (0 snails): 0 kg/ha — {clear_area:.2f} ha"
+                    ))
+                    for i in range(batch_zone_count):
+                        color = zone_colors[i + 2]
+                        if batch_zone_count == 1:
+                            range_text = f">{batch_clear_threshold:.1f}"
+                        elif i == 0:
+                            range_text = f"{batch_clear_threshold:.1f}-{batch_thresholds[0]:.1f}"
+                        elif i == batch_zone_count - 1:
+                            range_text = f">{batch_thresholds[-1]:.1f}"
+                        else:
+                            range_text = f"{batch_thresholds[i-1]:.1f}-{batch_thresholds[i]:.1f}"
+                        risk_area = zone_stats[i + 1]['area_ha'] if (i + 1) < len(zone_stats) else 0
+                        legend_entries.append((
+                            color,
+                            f"{batch_zone_names[i]} ({range_text}): {batch_zone_rates[i]} kg/ha — {risk_area:.2f} ha"
+                        ))
 
-                    # Generate prescription shapefile
-                    try:
-                        zone_map = classify_zones(grid_z, batch_thresholds, batch_zone_count, batch_clear_threshold)
-                        zone_map = filter_small_zones(zone_map, batch_min_area, batch_zone_count, pixel_size)
+                    # Render heatmap + zone map side by side
+                    fig = render_heatmap_figure(
+                        grid_z, bounds, cmap, norm, group_name,
+                        zone_rgb=zone_rgb, zone_map=zone_map,
+                        legend_entries=legend_entries,
+                        snail_type=snail_type, hide_field_name=hide_field_name
+                    )
 
-                        zone_gdf = zones_to_polygons(
-                            zone_map, bounds, pixel_size, batch_zone_count,
-                            batch_zone_names, batch_zone_rates, batch_thresholds, batch_clear_threshold
+                # Display the figure
+                st.pyplot(fig, width="stretch")
+
+                # Zone summary for this field
+                with st.expander(f"📋 Zone Summary — {output_name}"):
+                    zone_data = []
+                    total_bait = 0
+                    for stat in zone_stats:
+                        if stat['zone_type'] == 'clear':
+                            zone_data.append({
+                                "Zone": "Clear", "Area (ha)": f"{stat['area_ha']:.2f}",
+                                "Bait Rate (kg/ha)": 0, "Total Bait (kg)": "0"
+                            })
+                        else:
+                            risk_idx = stat['zone'] - 2
+                            rate = batch_zone_rates[risk_idx] if risk_idx < len(batch_zone_rates) else 0
+                            bait = stat['area_ha'] * rate
+                            total_bait += bait
+                            zone_data.append({
+                                "Zone": batch_zone_names[risk_idx] if risk_idx < len(batch_zone_names) else f"Zone {risk_idx+1}",
+                                "Area (ha)": f"{stat['area_ha']:.2f}",
+                                "Bait Rate (kg/ha)": rate,
+                                "Total Bait (kg)": f"{bait:.1f}"
+                            })
+                    st.table(pd.DataFrame(zone_data))
+                    st.info(f"Total bait: **{total_bait:.1f} kg**")
+
+                # Per-field download buttons
+                dl_cols = st.columns(3)
+                png_bytes = figure_to_bytes(fig, format='png', dpi=200)
+                all_png[output_name] = png_bytes
+                plt.close(fig)
+
+                with dl_cols[0]:
+                    st.download_button(
+                        label="⬇️ Heatmap PNG",
+                        data=png_bytes,
+                        file_name=f"{output_name.replace(' ', '_')}_map.png",
+                        mime="image/png",
+                        key=f"batch_png_{idx}_{snail_type}"
+                    )
+
+                # Generate prescription
+                try:
+                    zone_gdf = zones_to_polygons(
+                        zone_map, bounds, pixel_size, batch_zone_count,
+                        batch_zone_names, batch_zone_rates, batch_thresholds, batch_clear_threshold
+                    )
+                    if zone_gdf is not None:
+                        rx_field = group_name
+                        rx_farm = ""
+                        rx_client = ""
+                        if 'boundary_gdf' in group and group['boundary_gdf'] is not None:
+                            bg = group['boundary_gdf'].iloc[0] if len(group['boundary_gdf']) > 0 else None
+                            if bg is not None:
+                                rx_farm = str(bg.get('FARM_NAME', '')) if 'FARM_NAME' in group['boundary_gdf'].columns else ""
+                                rx_client = str(bg.get('CLIENT_NAM', '')) if 'CLIENT_NAM' in group['boundary_gdf'].columns else ""
+
+                        safe_name = output_name.replace(' ', '_').replace('/', '_')
+                        shp_zip = export_zones_to_shapefile(
+                            zone_gdf, f"{safe_name}_prescription",
+                            product_name=batch_rx_product,
+                            field_name=rx_field,
+                            farm_name=rx_farm,
+                            client_name=rx_client
                         )
+                        if shp_zip:
+                            all_rx[output_name] = shp_zip
+                            with dl_cols[1]:
+                                st.download_button(
+                                    label="📦 Prescription ZIP",
+                                    data=shp_zip,
+                                    file_name=f"{safe_name}_prescription.zip",
+                                    mime="application/zip",
+                                    key=f"batch_rx_{idx}_{snail_type}"
+                                )
+                except Exception as e:
+                    st.warning(f"⚠️ Could not generate prescription: {e}")
 
-                        if zone_gdf is not None:
-                            rx_field = group_name
-                            rx_farm = ""
-                            rx_client = ""
-                            if 'boundary_gdf' in group and group['boundary_gdf'] is not None:
-                                bg = group['boundary_gdf'].iloc[0] if len(group['boundary_gdf']) > 0 else None
-                                if bg is not None:
-                                    rx_farm = str(bg.get('FARM_NAME', '')) if 'FARM_NAME' in group['boundary_gdf'].columns else ""
-                                    rx_client = str(bg.get('CLIENT_NAM', '')) if 'CLIENT_NAM' in group['boundary_gdf'].columns else ""
+                st.divider()
 
-                            safe_name = output_name.replace(' ', '_').replace('/', '_')
-                            shp_zip = export_zones_to_shapefile(
-                                zone_gdf, f"{safe_name}_prescription",
-                                product_name=batch_rx_product,
-                                field_name=rx_field,
-                                farm_name=rx_farm,
-                                client_name=rx_client
-                            )
-                            if shp_zip:
-                                rx_dict[output_name] = shp_zip
-                    except Exception as e:
-                        st.warning(f"⚠️ Could not generate prescription for {output_name}: {e}")
+        # === DOWNLOAD ALL ===
+        if all_png:
+            st.header("📥 Download All")
+            dl_all_cols = st.columns(2)
 
-            progress.empty()
-
-            if png_dict:
-                st.success(f"✅ Generated {len(png_dict)} heatmap(s) and {len(rx_dict)} prescription(s)!")
-
-                # Create ZIP and download
-                zip_bytes = create_zip(png_dict)
+            with dl_all_cols[0]:
+                zip_bytes = create_zip(all_png)
                 st.download_button(
-                    label=f"📥 Download All Heatmaps ({len(png_dict)} files) as ZIP",
+                    label=f"📥 All Heatmaps ({len(all_png)}) as ZIP",
                     data=zip_bytes,
                     file_name="snail_heatmaps.zip",
                     mime="application/zip",
                     type="primary"
                 )
 
-                # Prescription downloads
-                if rx_dict:
+            if all_rx:
+                with dl_all_cols[1]:
                     rx_zip_buffer = io.BytesIO()
                     with zipfile.ZipFile(rx_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                        for name, shp_bytes in rx_dict.items():
+                        for name, shp_bytes in all_rx.items():
                             safe = name.replace(' ', '_').replace('/', '_')
                             zf.writestr(f"{safe}_prescription.zip", shp_bytes)
                     rx_zip_buffer.seek(0)
-
                     st.download_button(
-                        label=f"📦 Download All Prescriptions ({len(rx_dict)} files) as ZIP",
+                        label=f"📦 All Prescriptions ({len(all_rx)}) as ZIP",
                         data=rx_zip_buffer.getvalue(),
                         file_name="snail_prescriptions.zip",
                         mime="application/zip"
                     )
-
-                # Preview first heatmap
-                with st.expander("👀 Preview first heatmap"):
-                    first_key = list(png_dict.keys())[0]
-                    st.image(png_dict[first_key], caption=first_key)
-            else:
-                st.error("No heatmaps generated. Check your data.")
 
     else:
         # === SINGLE FILE MODE (original behavior) ===
