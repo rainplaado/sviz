@@ -149,6 +149,69 @@ if uploaded_files:
             apply_blur = st.checkbox("Smooth edges", value=False)
             blur_sigma = st.slider("Edge smoothing", 0.5, 5.0, DEFAULT_BLUR_SIGMA) if apply_blur else DEFAULT_BLUR_SIGMA
 
+        with st.sidebar.expander("🎯 Batch Zone Settings", expanded=False):
+            st.caption("Zone settings applied to all fields in batch mode.")
+
+            batch_zone_count = st.radio(
+                "Number of risk zones", [1, 2, 3], index=2, horizontal=True,
+                help="1 = Bait zone only. 2 = Low + High. 3 = Low + Medium + High.",
+                key="batch_zone_count"
+            )
+
+            batch_clear_threshold = st.slider(
+                "Clear threshold (snails/point)",
+                min_value=0.0, max_value=1.0,
+                value=DEFAULT_CLEAR_THRESHOLD, step=0.05,
+                key="batch_clear_thresh"
+            )
+
+            batch_thresholds = []
+            for i in range(batch_zone_count - 1):
+                batch_thresholds.append(st.number_input(
+                    f"Threshold {i+1} (snails/point)",
+                    value=DEFAULT_THRESHOLDS[i] if i < len(DEFAULT_THRESHOLDS) else (i+1)*0.5,
+                    step=0.1, format="%.1f",
+                    key=f"batch_thresh_{i}"
+                ))
+
+            st.divider()
+            batch_default_names = (
+                ["Bait Zone"] if batch_zone_count == 1
+                else ["Low Risk", "High Risk"] if batch_zone_count == 2
+                else ["Low Risk", "Medium Risk", "High Risk"]
+            )
+
+            batch_zone_names = []
+            batch_zone_rates = []
+            for i in range(batch_zone_count):
+                cols = st.columns([3, 2])
+                with cols[0]:
+                    batch_zone_names.append(st.text_input(
+                        f"Risk zone {i+1} name",
+                        value=batch_default_names[i],
+                        key=f"batch_zname_{i}"
+                    ))
+                with cols[1]:
+                    batch_zone_rates.append(st.number_input(
+                        f"Bait (kg/ha)",
+                        value=0,
+                        key=f"batch_zrate_{i}"
+                    ))
+
+            st.divider()
+            batch_fill_gaps = st.checkbox("Fill gaps in coverage", value=True, key="batch_fill")
+            batch_min_area = st.slider(
+                "Min risk zone size (ha)",
+                min_value=0.0, max_value=5.0,
+                value=0.5, step=0.1,
+                key="batch_min_area"
+            )
+            batch_rx_product = st.text_input(
+                "Product name", value="BaitRate",
+                help="Rate column name in prescription shapefile (max 10 chars)",
+                key="batch_rx_product"
+            )
+
         # Load and validate all files
         st.header("📂 Batch Processing")
 
@@ -335,6 +398,7 @@ if uploaded_files:
         if st.button("🚀 Process All & Generate Heatmaps", type="primary"):
             cmap, norm = get_colormap_and_norm(min_count, max_count)
             png_dict = {}
+            rx_dict = {}  # prescription ZIPs per field
 
             # Determine which snail types to process
             if snail_option == "All (separate)":
@@ -379,8 +443,16 @@ if uploaded_files:
                         from heatmap import mask_grid_to_boundary
                         grid_z = mask_grid_to_boundary(grid_z, bounds, group_boundary)
 
+                    # Fill gaps if enabled
+                    if batch_fill_gaps:
+                        boundary_mask = None
+                        if group_boundary is not None:
+                            boundary_mask = create_boundary_mask(grid_z.shape, bounds, group_boundary)
+                        grid_z = fill_gaps(grid_z, max_fill_pixels=30, boundary_mask=boundary_mask)
+                        if boundary_mask is not None:
+                            grid_z = np.where(boundary_mask, grid_z, np.nan)
+
                     # Render heatmap-only figure
-                    # Add snail type suffix if generating multiple types
                     if snail_option == "All (separate)":
                         output_name = f"{group_name}_{snail_type}"
                     else:
@@ -391,10 +463,43 @@ if uploaded_files:
                     png_dict[output_name] = png_bytes
                     plt.close(fig)
 
+                    # Generate prescription shapefile
+                    try:
+                        zone_map = classify_zones(grid_z, batch_thresholds, batch_zone_count, batch_clear_threshold)
+                        zone_map = filter_small_zones(zone_map, batch_min_area, batch_zone_count, pixel_size)
+
+                        zone_gdf = zones_to_polygons(
+                            zone_map, bounds, pixel_size, batch_zone_count,
+                            batch_zone_names, batch_zone_rates, batch_thresholds, batch_clear_threshold
+                        )
+
+                        if zone_gdf is not None:
+                            rx_field = group_name
+                            rx_farm = ""
+                            rx_client = ""
+                            if 'boundary_gdf' in group and group['boundary_gdf'] is not None:
+                                bg = group['boundary_gdf'].iloc[0] if len(group['boundary_gdf']) > 0 else None
+                                if bg is not None:
+                                    rx_farm = str(bg.get('FARM_NAME', '')) if 'FARM_NAME' in group['boundary_gdf'].columns else ""
+                                    rx_client = str(bg.get('CLIENT_NAM', '')) if 'CLIENT_NAM' in group['boundary_gdf'].columns else ""
+
+                            safe_name = output_name.replace(' ', '_').replace('/', '_')
+                            shp_zip = export_zones_to_shapefile(
+                                zone_gdf, f"{safe_name}_prescription",
+                                product_name=batch_rx_product,
+                                field_name=rx_field,
+                                farm_name=rx_farm,
+                                client_name=rx_client
+                            )
+                            if shp_zip:
+                                rx_dict[output_name] = shp_zip
+                    except Exception as e:
+                        st.warning(f"⚠️ Could not generate prescription for {output_name}: {e}")
+
             progress.empty()
 
             if png_dict:
-                st.success(f"✅ Generated {len(png_dict)} heatmap(s)!")
+                st.success(f"✅ Generated {len(png_dict)} heatmap(s) and {len(rx_dict)} prescription(s)!")
 
                 # Create ZIP and download
                 zip_bytes = create_zip(png_dict)
@@ -405,6 +510,22 @@ if uploaded_files:
                     mime="application/zip",
                     type="primary"
                 )
+
+                # Prescription downloads
+                if rx_dict:
+                    rx_zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(rx_zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for name, shp_bytes in rx_dict.items():
+                            safe = name.replace(' ', '_').replace('/', '_')
+                            zf.writestr(f"{safe}_prescription.zip", shp_bytes)
+                    rx_zip_buffer.seek(0)
+
+                    st.download_button(
+                        label=f"📦 Download All Prescriptions ({len(rx_dict)} files) as ZIP",
+                        data=rx_zip_buffer.getvalue(),
+                        file_name="snail_prescriptions.zip",
+                        mime="application/zip"
+                    )
 
                 # Preview first heatmap
                 with st.expander("👀 Preview first heatmap"):
