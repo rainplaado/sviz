@@ -384,6 +384,14 @@ def zones_to_polygons(zone_map, bounds, pixel_size, zone_count,
         tol = min(px_width, px_height) * 1.5
         merged = merged.simplify(tol, preserve_topology=True)
 
+        # Buffer outward slightly so adjacent zones overlap instead of having
+        # gaps.  Independent simplification causes zone boundaries to diverge
+        # by up to ~tol, leaving slivers with no coverage.  A small overlap
+        # (half the simplification tolerance) is invisible in JD Operations
+        # Center but eliminates missing-coverage triangles.
+        overlap_buf = tol * 0.5
+        merged = merged.buffer(overlap_buf, join_style=2)  # mitre join
+
         if merged.is_empty:
             continue
 
@@ -471,13 +479,20 @@ def export_zones_to_shapefile(gdf, filename="prescription_zones",
         lambda g: ShapelyPolygon(g.exterior) if hasattr(g, 'exterior') else g
     )
 
-    # Remove tiny polygon fragments to stay under JD's feature limit
-    # Dissolve by rate, then re-explode — this merges touching fragments
-    export_gdf = export_gdf.dissolve(by=field_col, as_index=False)
+    # Merge nearby same-rate fragments into larger zones.
+    # Buffer out slightly → dissolve (merges overlapping same-rate polygons)
+    # → buffer back in so final shapes aren't inflated.
+    export_projected = export_gdf.to_crs(epsg=3857)
+    merge_buf = 3.0  # metres — closes small gaps between same-rate fragments
+    export_projected['geometry'] = export_projected.geometry.buffer(merge_buf)
+    export_projected = export_projected.dissolve(by=field_col, as_index=False)
+    export_projected['geometry'] = export_projected.geometry.buffer(-merge_buf)
+    # Remove any geometries that vanished after negative buffer
+    export_projected = export_projected[~export_projected.is_empty].reset_index(drop=True)
+    export_gdf = export_projected.to_crs(epsg=4326)
     export_gdf = export_gdf.explode(index_parts=False).reset_index(drop=True)
 
     # Filter out fragments smaller than 0.01 ha (100 m²)
-    # Use a projected CRS for accurate area calculation
     export_projected = export_gdf.to_crs(epsg=3857)
     min_area_m2 = 100  # 0.01 ha
     keep_mask = export_projected.geometry.area >= min_area_m2
@@ -485,7 +500,13 @@ def export_zones_to_shapefile(gdf, filename="prescription_zones",
 
     # If still over 500 features, progressively simplify and merge
     if len(export_gdf) > 500:
-        export_gdf = export_gdf.dissolve(by=field_col, as_index=False)
+        # Aggressive buffer-dissolve-unbuffer to merge nearby fragments
+        export_projected = export_gdf.to_crs(epsg=3857)
+        export_projected['geometry'] = export_projected.geometry.buffer(5.0)
+        export_projected = export_projected.dissolve(by=field_col, as_index=False)
+        export_projected['geometry'] = export_projected.geometry.buffer(-5.0)
+        export_projected = export_projected[~export_projected.is_empty].reset_index(drop=True)
+        export_gdf = export_projected.to_crs(epsg=4326)
         # Simplify geometry more aggressively
         export_gdf['geometry'] = export_gdf['geometry'].simplify(0.0001, preserve_topology=True)
         export_gdf = export_gdf.explode(index_parts=False).reset_index(drop=True)
