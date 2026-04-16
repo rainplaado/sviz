@@ -462,8 +462,8 @@ def export_zones_to_shapefile(gdf, filename="prescription_zones",
     if not field_col:
         field_col = "Rate"
 
-    # Prepare export: single rate column, explode multi-part polygons
-    export_gdf = gdf[['geometry', 'Rate']].copy()
+    # Prepare export: keep Zone column for dissolve, rate column for output
+    export_gdf = gdf[['geometry', 'Zone', 'Rate']].copy()
     export_gdf = export_gdf.rename(columns={'Rate': field_col})
     export_gdf[field_col] = export_gdf[field_col].astype(float)
 
@@ -476,25 +476,28 @@ def export_zones_to_shapefile(gdf, filename="prescription_zones",
         lambda g: ShapelyPolygon(g.exterior) if hasattr(g, 'exterior') else g
     )
 
-    # Merge nearby same-rate fragments into larger zones.
-    # Buffer out slightly → dissolve (merges overlapping same-rate polygons)
-    # → buffer back in so final shapes aren't inflated.
+    # Merge nearby same-zone fragments into larger zones.
+    # Dissolve by Zone (not rate) so zones with the same rate stay separate
+    # and don't swallow adjacent zones during the buffer step.
     export_projected = export_gdf.to_crs(epsg=3857)
-    merge_buf = 3.0  # metres — closes small gaps between same-rate fragments
+    merge_buf = 3.0  # metres — closes small gaps between same-zone fragments
     export_projected['geometry'] = export_projected.geometry.buffer(merge_buf)
-    export_projected = export_projected.dissolve(by=field_col, as_index=False)
+    export_projected = export_projected.dissolve(by='Zone', as_index=False)
     export_projected['geometry'] = export_projected.geometry.buffer(-merge_buf)
     # Remove any geometries that vanished after negative buffer
     export_projected = export_projected[~export_projected.is_empty].reset_index(drop=True)
 
     # Make zones non-overlapping so JD shows all rate levels.
-    # Higher rates take priority — subtract them from lower-rate zones.
-    export_projected = export_projected.sort_values(field_col, ascending=False).reset_index(drop=True)
+    # Higher zones take priority — subtract them from lower zones.
+    export_projected = export_projected.sort_values('Zone', ascending=False).reset_index(drop=True)
     for i in range(1, len(export_projected)):
         higher_union = unary_union(export_projected.geometry.iloc[:i].tolist())
         diff = export_projected.geometry.iloc[i].difference(higher_union)
         export_projected.at[i, 'geometry'] = diff
     export_projected = export_projected[~export_projected.is_empty].reset_index(drop=True)
+
+    # Drop Zone column — only rate column needed for JD
+    export_projected = export_projected.drop(columns=['Zone'])
 
     export_gdf = export_projected.to_crs(epsg=4326)
     export_gdf = export_gdf.explode(index_parts=False).reset_index(drop=True)
