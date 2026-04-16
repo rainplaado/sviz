@@ -172,24 +172,20 @@ def mask_grid_to_boundary(grid_z, bounds, boundary_gdf):
     if boundary_gdf is None:
         return grid_z
 
-    from shapely.geometry import Point
+    import shapely
 
     minx, maxx, miny, maxy = bounds
     height, width = grid_z.shape
 
-    # Create coordinate arrays
-    x_coords = np.linspace(minx, maxx, width)
-    y_coords = np.linspace(miny, maxy, height)
-
     # Get boundary polygon
     boundary_union = boundary_gdf.to_crs(epsg=3857).unary_union
 
-    # Create mask
-    mask = np.zeros_like(grid_z, dtype=bool)
-    for i, y in enumerate(y_coords):
-        for j, x in enumerate(x_coords):
-            if boundary_union.contains(Point(x, y)):
-                mask[i, j] = True
+    # Vectorized point-in-polygon check
+    x_coords = np.linspace(minx, maxx, width)
+    y_coords = np.linspace(miny, maxy, height)
+    xx, yy = np.meshgrid(x_coords, y_coords)
+    flat_points = shapely.points(xx.ravel(), yy.ravel())
+    mask = shapely.contains(boundary_union, flat_points).reshape(grid_z.shape)
 
     # Apply mask - set outside values to NaN
     masked_grid = grid_z.copy()

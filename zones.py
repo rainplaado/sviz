@@ -112,26 +112,22 @@ def create_boundary_mask(grid_shape, bounds, boundary_gdf):
     if boundary_gdf is None:
         return None
 
-    from shapely.geometry import Point
     import numpy as np
+    import shapely
 
     minx, maxx, miny, maxy = bounds
     height, width = grid_shape
-
-    # Create coordinate arrays
-    x_coords = np.linspace(minx, maxx, width)
-    y_coords = np.linspace(miny, maxy, height)
 
     # Get boundary polygon in Web Mercator
     from data_loader import repair_geometry
     boundary_union = repair_geometry(boundary_gdf).to_crs(epsg=3857).unary_union
 
-    # Create mask
-    mask = np.zeros(grid_shape, dtype=bool)
-    for i, y in enumerate(y_coords):
-        for j, x in enumerate(x_coords):
-            if boundary_union.contains(Point(x, y)):
-                mask[i, j] = True
+    # Fully vectorized point-in-polygon check
+    x_coords = np.linspace(minx, maxx, width)
+    y_coords = np.linspace(miny, maxy, height)
+    xx, yy = np.meshgrid(x_coords, y_coords)
+    flat_points = shapely.points(xx.ravel(), yy.ravel())
+    mask = shapely.contains(boundary_union, flat_points).reshape(grid_shape)
 
     return mask
 
