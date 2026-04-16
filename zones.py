@@ -490,6 +490,16 @@ def export_zones_to_shapefile(gdf, filename="prescription_zones",
     export_projected['geometry'] = export_projected.geometry.buffer(-merge_buf)
     # Remove any geometries that vanished after negative buffer
     export_projected = export_projected[~export_projected.is_empty].reset_index(drop=True)
+
+    # Make zones non-overlapping so JD shows all rate levels.
+    # Higher rates take priority — subtract them from lower-rate zones.
+    export_projected = export_projected.sort_values(field_col, ascending=False).reset_index(drop=True)
+    for i in range(1, len(export_projected)):
+        higher_union = unary_union(export_projected.geometry.iloc[:i].tolist())
+        diff = export_projected.geometry.iloc[i].difference(higher_union)
+        export_projected.at[i, 'geometry'] = diff
+    export_projected = export_projected[~export_projected.is_empty].reset_index(drop=True)
+
     export_gdf = export_projected.to_crs(epsg=4326)
     export_gdf = export_gdf.explode(index_parts=False).reset_index(drop=True)
 
