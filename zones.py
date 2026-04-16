@@ -463,7 +463,9 @@ def export_zones_to_shapefile(gdf, filename="prescription_zones",
         field_col = "Rate"
 
     # Prepare export: keep Zone column for dissolve, rate column for output
+    # Exclude Rate=0 polygons — JD treats uncovered area as no-application
     export_gdf = gdf[['geometry', 'Zone', 'Rate']].copy()
+    export_gdf = export_gdf[export_gdf['Rate'] > 0].reset_index(drop=True)
     export_gdf = export_gdf.rename(columns={'Rate': field_col})
     export_gdf[field_col] = export_gdf[field_col].astype(float)
 
