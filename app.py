@@ -153,7 +153,7 @@ if uploaded_files:
             st.caption("Zone settings applied to all fields in batch mode.")
 
             batch_zone_count = st.radio(
-                "Number of risk zones", [1, 2, 3], index=2, horizontal=True,
+                "Number of risk zones", [1, 2, 3], index=1, horizontal=True,
                 help="1 = Bait zone only. 2 = Low + High. 3 = Low + Medium + High.",
                 key="batch_zone_count"
             )
@@ -796,7 +796,7 @@ if uploaded_files:
                 )
 
                 zone_count = st.radio(
-                    "Number of risk zones", [1, 2, 3], index=2, horizontal=True,
+                    "Number of risk zones", [1, 2, 3], index=1, horizontal=True,
                     help="1 = Bait zone only. 2 = Low + High risk. 3 = Low + Medium + High risk."
                 )
 
