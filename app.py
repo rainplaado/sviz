@@ -183,6 +183,11 @@ if uploaded_files:
 
             batch_zone_names = []
             batch_zone_rates = []
+            batch_default_rates = (
+                [10] if batch_zone_count == 1
+                else [10, 12] if batch_zone_count == 2
+                else [0, 10, 12]
+            )
             for i in range(batch_zone_count):
                 cols = st.columns([3, 2])
                 with cols[0]:
@@ -194,7 +199,7 @@ if uploaded_files:
                 with cols[1]:
                     batch_zone_rates.append(st.number_input(
                         f"Bait (kg/ha)",
-                        value=0,
+                        value=batch_default_rates[i],
                         key=f"batch_zrate_{i}"
                     ))
 
@@ -849,6 +854,11 @@ if uploaded_files:
                 st.divider()
                 st.caption("**Risk zone names and bait rates:**")
 
+                default_rates = (
+                    [10] if zone_count == 1
+                    else [10, 12] if zone_count == 2
+                    else [0, 10, 12]
+                )
                 default_names = (
                     ["Bait Zone"] if zone_count == 1
                     else ["Low Risk", "High Risk"] if zone_count == 2
@@ -866,7 +876,7 @@ if uploaded_files:
                     with cols[1]:
                         zone_rates.append(st.number_input(
                             f"Bait (kg/ha)",
-                            value=0,
+                            value=default_rates[i],
                             key=f"zrate_{i}"
                         ))
 
