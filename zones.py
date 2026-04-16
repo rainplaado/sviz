@@ -123,7 +123,8 @@ def create_boundary_mask(grid_shape, bounds, boundary_gdf):
     y_coords = np.linspace(miny, maxy, height)
 
     # Get boundary polygon in Web Mercator
-    boundary_union = boundary_gdf.to_crs(epsg=3857).unary_union
+    from data_loader import repair_geometry
+    boundary_union = repair_geometry(boundary_gdf).to_crs(epsg=3857).unary_union
 
     # Create mask
     mask = np.zeros(grid_shape, dtype=bool)
