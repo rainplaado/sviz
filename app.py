@@ -1145,12 +1145,6 @@ if uploaded_files:
                     lambda x: mcolors.to_hex(cmap(norm(x)))
                 )
 
-                # Limit markers for performance (warn if too many)
-                max_markers = 5000
-                if len(gdf_latlon) > max_markers:
-                    st.warning(f"⚠️ Showing first {max_markers:,} of {len(gdf_latlon):,} points for performance. Use Heatmap mode for full data.")
-                    gdf_latlon = gdf_latlon.head(max_markers)
-
                 for _, row in gdf_latlon.iterrows():
                     folium.Circle(
                         location=(row["lat"], row["lon"]),
