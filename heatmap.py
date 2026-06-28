@@ -47,14 +47,15 @@ def interpolate_heatmap(gdf_m, snail_type, pixel_size, search_radius,
     tree = cKDTree(points)
     dists, idxs = tree.query(grid_coords, distance_upper_bound=search_radius, k=8)
 
-    # Interpolate using exponential decay weighting
-    grid_z = np.full(grid_coords.shape[0], np.nan)
-    for i, (dist_row, idx_row) in enumerate(zip(dists, idxs)):
-        valid = np.isfinite(dist_row) & (dist_row < extrapolation_limit)
-        if np.any(valid):
-            w = np.exp(-dist_row[valid] / smoothing)
-            grid_z[i] = np.sum(w * values[idx_row[valid]]) / np.sum(w)
-
+    # Vectorised IDW: out-of-range hits come back as dist=inf, idx=len(points);
+    # clip the indices so we can fancy-index safely, then zero their weights via `valid`.
+    valid = np.isfinite(dists) & (dists < extrapolation_limit)
+    safe_idxs = np.where(valid, idxs, 0)
+    neighbour_values = values[safe_idxs]
+    w = np.where(valid, np.exp(-dists / smoothing), 0.0)
+    w_sum = w.sum(axis=1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        grid_z = np.where(w_sum > 0, (w * neighbour_values).sum(axis=1) / w_sum, np.nan)
     grid_z = grid_z.reshape(grid_x.shape)
 
     # Apply Gaussian blur if requested

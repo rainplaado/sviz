@@ -57,8 +57,25 @@ st.markdown(f"*Version {APP_VERSION}* — Upload snail detection data to visuali
 # Cache data loading for performance
 @st.cache_data
 def load_csv(uploaded_file):
-    """Load and cache CSV data."""
-    return pd.read_csv(uploaded_file)
+    """Load and cache CSV data. Tolerant of stray commas and normalises legacy column names."""
+    try:
+        df = pd.read_csv(uploaded_file)
+    except pd.errors.ParserError:
+        # Some exports have unquoted commas in fields like Image_Path; retry tolerantly.
+        if hasattr(uploaded_file, "seek"):
+            uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file, engine="python", on_bad_lines="skip")
+        st.sidebar.warning("⚠️ Some malformed rows in the CSV were skipped.")
+    # Newer detection exports use 'Class' instead of 'Snail_Type' — normalise.
+    if "Class" in df.columns and "Snail_Type" not in df.columns:
+        df = df.rename(columns={"Class": "Snail_Type"})
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def cached_prepare_data(df, file_type, snail_option, min_confidence, max_confidence):
+    """Cached wrapper around load_and_prepare_data — keyed on (df, threshold)."""
+    return load_and_prepare_data(df, file_type, snail_option, min_confidence, max_confidence)
 
 
 def create_zip(files_dict):
@@ -639,31 +656,28 @@ if uploaded_files:
 
         # Confidence filtering (only for detection files)
         min_confidence = None
-        max_confidence = None
+        max_confidence = 1.0
 
         if file_type == "detections":
-            st.sidebar.subheader("🎯 Confidence Filter")
-            confidence_range = st.sidebar.slider(
-                "Detection confidence range",
+            st.sidebar.subheader("🎯 Detection Threshold")
+            original_count = len(df)
+            min_confidence = st.sidebar.slider(
+                "Confidence threshold",
                 min_value=0.0,
                 max_value=1.0,
-                value=(DEFAULT_MIN_CONFIDENCE, 1.0),
-                step=0.05,
-                help="Filter out low-confidence detections. Higher values = more certain detections only."
+                value=float(DEFAULT_MIN_CONFIDENCE),
+                step=0.01,
+                help="Only detections with Confidence ≥ this value are included. "
+                     "Drag to see the map update live."
             )
-            min_confidence = confidence_range[0]
-            max_confidence = confidence_range[1]
+            kept_count = int((df["Confidence"] >= min_confidence).sum())
+            kept_pct = (kept_count / original_count * 100) if original_count else 0
+            st.sidebar.caption(f"**{kept_count:,}** of {original_count:,} detections kept ({kept_pct:.0f}%)")
 
-            # Show filtered count
-            original_count = len(df)
-            filtered_df_preview = df[(df["Confidence"] >= min_confidence) & (df["Confidence"] <= max_confidence)]
-            st.sidebar.caption(f"Showing {len(filtered_df_preview):,} of {original_count:,} detections")
-
-        # Prepare data with filtering
-        with st.spinner("Processing data..."):
-            prepared_df, snail_type = load_and_prepare_data(
-                df, file_type, snail_option, min_confidence, max_confidence
-            )
+        # Prepare data with filtering (cached on threshold so repeats are instant)
+        prepared_df, snail_type = cached_prepare_data(
+            df, file_type, snail_option, min_confidence, max_confidence
+        )
 
         # Count range settings
         st.sidebar.subheader("🎨 Color Scale")
@@ -1116,19 +1130,29 @@ if uploaded_files:
         elif mode == "Detection Map":
             # === DETECTION MAP SETTINGS ===
             with st.sidebar.expander("📍 Map Settings", expanded=True):
-                marker_radius = st.slider(
-                    "Marker size (m)",
-                    min_value=1,
-                    max_value=20,
-                    value=DEFAULT_MARKER_RADIUS,
-                    help="Size of each detection marker on the map"
+                render_mode = st.radio(
+                    "Render style",
+                    ["Dots", "Heatmap density", "Clustered"],
+                    help=(
+                        "Dots = individual coloured detections (fast canvas rendering). "
+                        "Heatmap = WebGL density layer, ideal for huge files. "
+                        "Clustered = groups overlapping markers at low zoom (best legibility)."
+                    ),
                 )
-                zoom_level = st.slider(
-                    "Zoom level",
-                    min_value=10,
-                    max_value=20,
-                    value=DEFAULT_ZOOM,
-                    help="Initial zoom level of the map"
+                marker_radius_px = st.slider(
+                    "Dot size (px)",
+                    min_value=1, max_value=12, value=4,
+                    help="Pixel size — stays readable at every zoom level."
+                )
+                basemap_choice = st.selectbox(
+                    "Base map",
+                    ["Satellite", "Streets", "Light", "Dark"],
+                    index=0,
+                )
+                outline_markers = st.checkbox(
+                    "Black outline on dots",
+                    value=False,
+                    help="Adds a thin black ring around each dot — improves contrast but is slower."
                 )
 
             # === GENERATE MAP ===
@@ -1137,30 +1161,100 @@ if uploaded_files:
                 gdf_latlon["lon"] = gdf_latlon.geometry.x
                 gdf_latlon["lat"] = gdf_latlon.geometry.y
 
-                center = [gdf_latlon["lat"].mean(), gdf_latlon["lon"].mean()]
-                m = leafmap.Map(center=center, zoom=zoom_level)
+                # Sample if too many points for the live browser to handle smoothly
+                MAX_POINTS = 25000
+                total_points = len(gdf_latlon)
+                if render_mode == "Dots" and total_points > MAX_POINTS:
+                    gdf_latlon = gdf_latlon.sample(MAX_POINTS, random_state=0)
+                    st.caption(f"⚡ Showing a {MAX_POINTS:,}-point sample of {total_points:,} for speed. "
+                               f"Switch to **Heatmap density** to see all of them.")
 
-                # Add colored markers
-                gdf_latlon["color"] = gdf_latlon[snail_type].apply(
-                    lambda x: mcolors.to_hex(cmap(norm(x)))
-                )
+                tile_url, tile_attr = {
+                    "Satellite": (
+                        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                        "Esri World Imagery",
+                    ),
+                    "Streets": ("OpenStreetMap", None),
+                    "Light": (
+                        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+                        "© OpenStreetMap, © CARTO",
+                    ),
+                    "Dark": (
+                        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+                        "© OpenStreetMap, © CARTO",
+                    ),
+                }[basemap_choice]
 
-                for _, row in gdf_latlon.iterrows():
-                    folium.Circle(
-                        location=(row["lat"], row["lon"]),
-                        radius=marker_radius,
-                        color=row["color"],
-                        fill=True,
-                        fill_color=row["color"],
-                        fill_opacity=0.8,
-                        popup=f"{snail_type}: {row[snail_type]}",
-                        weight=1,
-                        opacity=1
+                # prefer_canvas=True draws all markers on a single <canvas> instead of one
+                # SVG node per dot — orders of magnitude faster for thousands of points.
+                if tile_attr is None:
+                    m = folium.Map(tiles=tile_url, control_scale=True, prefer_canvas=True)
+                else:
+                    m = folium.Map(tiles=None, control_scale=True, prefer_canvas=True)
+                    folium.TileLayer(tile_url, attr=tile_attr, name=basemap_choice).add_to(m)
+
+                if render_mode == "Heatmap density":
+                    from folium.plugins import HeatMap
+                    HeatMap(
+                        list(zip(gdf_latlon["lat"], gdf_latlon["lon"], gdf_latlon[snail_type])),
+                        radius=12, blur=18, min_opacity=0.3,
                     ).add_to(m)
+
+                elif render_mode == "Clustered":
+                    from folium.plugins import FastMarkerCluster
+                    # Build a JS callback that creates a coloured circle for each cluster leaf
+                    callback = f"""
+                        function (row) {{
+                            var c = L.circleMarker(new L.LatLng(row[0], row[1]), {{
+                                radius: {marker_radius_px},
+                                color: row[2],
+                                fillColor: row[2],
+                                fillOpacity: 0.9,
+                                weight: {1.2 if outline_markers else 0},
+                            }});
+                            c.bindTooltip('Count: ' + row[3]);
+                            return c;
+                        }}
+                    """
+                    colors = gdf_latlon[snail_type].apply(lambda x: mcolors.to_hex(cmap(norm(x))))
+                    data = list(zip(gdf_latlon["lat"], gdf_latlon["lon"], colors, gdf_latlon[snail_type]))
+                    FastMarkerCluster(data, callback=callback).add_to(m)
+
+                else:  # "Dots" — vectorised colour calc + canvas-rendered CircleMarkers
+                    gdf_latlon["color"] = gdf_latlon[snail_type].apply(
+                        lambda x: mcolors.to_hex(cmap(norm(x)))
+                    )
+                    weight = 1.2 if outline_markers else 0
+                    outline = "#000000" if outline_markers else None
+                    for lat, lon, color, count in zip(
+                        gdf_latlon["lat"].values,
+                        gdf_latlon["lon"].values,
+                        gdf_latlon["color"].values,
+                        gdf_latlon[snail_type].values,
+                    ):
+                        folium.CircleMarker(
+                            location=(lat, lon),
+                            radius=marker_radius_px,
+                            color=outline if outline_markers else color,
+                            weight=weight,
+                            fill=True,
+                            fill_color=color,
+                            fill_opacity=0.9,
+                        ).add_to(m)
+
+                # Auto-fit the view to the data extent (with a touch of padding)
+                min_lat, max_lat = gdf_latlon["lat"].min(), gdf_latlon["lat"].max()
+                min_lon, max_lon = gdf_latlon["lon"].min(), gdf_latlon["lon"].max()
+                lat_pad = (max_lat - min_lat) * 0.05 or 0.0005
+                lon_pad = (max_lon - min_lon) * 0.05 or 0.0005
+                m.fit_bounds(
+                    [[min_lat - lat_pad, min_lon - lon_pad],
+                     [max_lat + lat_pad, max_lon + lon_pad]]
+                )
 
             # Display the map
             st.subheader("🗺️ Detection Map")
-            components.html(m.to_html(), height=650)
+            components.html(m.get_root().render(), height=650)
 
             # Color legend
             st.caption("🟢 Low snail count → 🟡 Medium → 🔴 High snail count")
