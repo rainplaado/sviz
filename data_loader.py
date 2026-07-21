@@ -41,6 +41,13 @@ def load_boundaries_from_zip(zip_file):
                     shp_path = os.path.join(root, f)
                     try:
                         gdf = gpd.read_file(shp_path)
+                        # Shapefiles may come in any projection (UTM, GDA94, etc.)
+                        # Reproject each one to WGS84 before combining.
+                        if gdf.crs is None:
+                            gdf = gdf.set_crs("EPSG:4326")
+                        elif gdf.crs.to_epsg() != 4326:
+                            gdf = gdf.to_crs("EPSG:4326")
+
                         # Extract field name from filename or attributes
                         if 'FIELD_NAME' in gdf.columns:
                             field_name = gdf['FIELD_NAME'].iloc[0]
@@ -63,9 +70,8 @@ def load_boundaries_from_zip(zip_file):
     if not boundaries:
         return None
 
-    # Combine all boundaries
-    combined = pd.concat(boundaries, ignore_index=True)
-    combined = gpd.GeoDataFrame(combined, crs="EPSG:4326")
+    # Combine all boundaries — they've all been reprojected to WGS84 above
+    combined = gpd.GeoDataFrame(pd.concat(boundaries, ignore_index=True), crs="EPSG:4326")
 
     return combined
 
